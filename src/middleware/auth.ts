@@ -1,11 +1,12 @@
 import type { Context, Next } from "hono";
+import type { HonoEnv } from "../types.js";
 import { db } from "../db/index.js";
 import { licenseKeys, users } from "../db/schema.js";
 import { eq, and, isNull } from "drizzle-orm";
 import { hashKey } from "../lib/license.js";
 
 // Validates Bearer token (sork_live_* key) and sets userId + licenseKeyId on context
-export async function licenseAuth(c: Context, next: Next) {
+export async function licenseAuth(c: Context<HonoEnv>, next: Next) {
   const auth = c.req.header("Authorization");
   if (!auth?.startsWith("Bearer ")) {
     return c.json({ error: "Missing Authorization header" }, 401);
@@ -42,7 +43,7 @@ export async function licenseAuth(c: Context, next: Next) {
 }
 
 // For dashboard routes authenticated via Clerk session token
-export async function clerkAuth(c: Context, next: Next) {
+export async function clerkAuth(c: Context<HonoEnv>, next: Next) {
   const clerkId = c.req.header("x-clerk-user-id");
   if (!clerkId) {
     return c.json({ error: "Unauthorized" }, 401);

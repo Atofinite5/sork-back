@@ -1,11 +1,12 @@
 import { Hono } from "hono";
+import type { HonoEnv } from "../types.js";
 import { db } from "../db/index.js";
 import { licenseKeys, users, subscriptions } from "../db/schema.js";
 import { eq, and, isNull } from "drizzle-orm";
 import { generateLicenseKey, hashKey, keyPrefix } from "../lib/license.js";
 import { canIssueKey, getUserQuota } from "../lib/quota.js";
 
-const license = new Hono();
+const license = new Hono<HonoEnv>();
 
 // GET /license/list — list active keys for authenticated user
 license.get("/list", async (c) => {

@@ -1,11 +1,12 @@
 import { Hono } from "hono";
+import type { HonoEnv } from "../types.js";
 import { db } from "../db/index.js";
 import { byokKeys } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { encryptKey, decryptKey } from "../lib/crypto.js";
 import { z } from "zod";
 
-const byok = new Hono();
+const byok = new Hono<HonoEnv>();
 
 const addSchema = z.object({
   provider: z.enum(["groq", "anthropic", "nvidia", "openai", "cohere", "custom"]),
