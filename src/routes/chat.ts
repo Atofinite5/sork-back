@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { HonoEnv } from "../types.js";
 import { groqChat } from "../lib/providers/groq.js";
 import { checkContentSafety } from "../lib/providers/nemotron.js";
 import { saveMemory, getRecentMemory, searchMemory } from "../agents/memory.js";
@@ -11,7 +12,7 @@ import { randomUUID } from "crypto";
 import OpenAI from "openai";
 import Groq from "groq-sdk";
 
-const chat = new Hono();
+const chat = new Hono<HonoEnv>();
 
 const chatSchema = z.object({
   message: z.string().min(1).max(8000),

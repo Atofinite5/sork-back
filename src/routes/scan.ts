@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { HonoEnv } from "../types.js";
 import { runPipeline } from "../agents/orchestrator.js";
 import { saveMemory } from "../agents/memory.js";
 import { db } from "../db/index.js";
@@ -9,7 +10,7 @@ import { getUserQuota } from "../lib/quota.js";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 
-const scan = new Hono();
+const scan = new Hono<HonoEnv>();
 
 const scanSchema = z.object({
   code: z.string().min(1).max(100_000),
@@ -20,7 +21,7 @@ const scanSchema = z.object({
 // POST /scan — run the full agent pipeline
 scan.post("/", async (c) => {
   const userId = c.get("userId") as string;
-  const licenseKeyId = c.get("licenseKeyId") as string | undefined;
+  const licenseKeyId = c.get("licenseKeyId");
 
   // Quota check
   const quota = await getUserQuota(userId);

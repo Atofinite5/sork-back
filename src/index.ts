@@ -3,12 +3,15 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { licenseAuth, clerkAuth } from "./middleware/auth.js";
+import type { HonoEnv } from "./types.js";
 import licenseRoutes from "./routes/license.js";
 import byokRoutes from "./routes/byok.js";
 import scanRoutes from "./routes/scan.js";
 import chatRoutes from "./routes/chat.js";
 import usageRoutes from "./routes/usage.js";
 import webhookRoutes from "./routes/webhooks.js";
+import adminRoutes from "./routes/admin.js";
+import stripeRoutes from "./routes/stripe.js";
 
 const app = new Hono();
 
@@ -24,21 +27,23 @@ app.use(
 
 app.get("/health", (c) => c.json({ status: "ok", version: "1.0.0" }));
 
-// Webhook routes (no auth — verified via svix signature)
+// Webhook routes (no auth — verified via signature)
 app.route("/webhooks", webhookRoutes);
+app.route("/webhooks/stripe", stripeRoutes);
 
 // License-key authenticated routes (CLI / scan usage)
-const apiWithLicenseAuth = new Hono();
+const apiWithLicenseAuth = new Hono<HonoEnv>();
 apiWithLicenseAuth.use("*", licenseAuth);
 apiWithLicenseAuth.route("/scan", scanRoutes);
 
 // Clerk session authenticated routes (dashboard)
-const apiWithClerkAuth = new Hono();
+const apiWithClerkAuth = new Hono<HonoEnv>();
 apiWithClerkAuth.use("*", clerkAuth);
 apiWithClerkAuth.route("/license", licenseRoutes);
 apiWithClerkAuth.route("/byok", byokRoutes);
 apiWithClerkAuth.route("/usage", usageRoutes);
 apiWithClerkAuth.route("/chat", chatRoutes);
+apiWithClerkAuth.route("/admin", adminRoutes);
 
 app.route("/api", apiWithLicenseAuth);
 app.route("/api", apiWithClerkAuth);
