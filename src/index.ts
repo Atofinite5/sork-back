@@ -11,7 +11,6 @@ import chatRoutes from "./routes/chat.js";
 import usageRoutes from "./routes/usage.js";
 import webhookRoutes from "./routes/webhooks.js";
 import adminRoutes from "./routes/admin.js";
-import stripeRoutes from "./routes/stripe.js";
 
 const app = new Hono();
 
@@ -27,9 +26,8 @@ app.use(
 
 app.get("/health", (c) => c.json({ status: "ok", version: "1.0.0" }));
 
-// Webhook routes (no auth — verified via signature)
+// Webhook routes (no auth — verified via svix signature)
 app.route("/webhooks", webhookRoutes);
-app.route("/webhooks/stripe", stripeRoutes);
 
 // License-key authenticated routes (CLI / scan usage)
 const apiWithLicenseAuth = new Hono<HonoEnv>();
