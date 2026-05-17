@@ -27,12 +27,4 @@ services:
       - key: ADMIN_USER_IDS
         sync: false
       - key: CLIENT_ORIGIN
-        sync: false
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
-        sync: false
-      - key: STRIPE_PRICE_PRO
-        sync: false
-      - key: STRIPE_PRICE_PRO_PLUS
-        sync: false
+        value: https://sorkcloud.space
