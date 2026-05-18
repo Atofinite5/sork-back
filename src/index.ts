@@ -29,22 +29,32 @@ app.get("/health", (c) => c.json({ status: "ok", version: "1.0.0" }));
 // Webhook routes (no auth — verified via svix signature)
 app.route("/webhooks", webhookRoutes);
 
-// License-key authenticated routes (CLI / scan usage)
-const apiWithLicenseAuth = new Hono<HonoEnv>();
-apiWithLicenseAuth.use("*", licenseAuth);
-apiWithLicenseAuth.route("/scan", scanRoutes);
+// CLI routes — license key Bearer token auth (only /api/scan)
+app.use("/api/scan/*", licenseAuth);
+app.use("/api/scan", licenseAuth);
+const cliApp = new Hono<HonoEnv>();
+cliApp.route("/scan", scanRoutes);
+app.route("/api", cliApp);
 
-// Clerk session authenticated routes (dashboard)
-const apiWithClerkAuth = new Hono<HonoEnv>();
-apiWithClerkAuth.use("*", clerkAuth);
-apiWithClerkAuth.route("/license", licenseRoutes);
-apiWithClerkAuth.route("/byok", byokRoutes);
-apiWithClerkAuth.route("/usage", usageRoutes);
-apiWithClerkAuth.route("/chat", chatRoutes);
-apiWithClerkAuth.route("/admin", adminRoutes);
+// Dashboard routes — Clerk session header auth
+app.use("/api/license/*", clerkAuth);
+app.use("/api/license", clerkAuth);
+app.use("/api/byok/*", clerkAuth);
+app.use("/api/byok", clerkAuth);
+app.use("/api/usage/*", clerkAuth);
+app.use("/api/usage", clerkAuth);
+app.use("/api/chat/*", clerkAuth);
+app.use("/api/chat", clerkAuth);
+app.use("/api/admin/*", clerkAuth);
+app.use("/api/admin", clerkAuth);
 
-app.route("/api", apiWithLicenseAuth);
-app.route("/api", apiWithClerkAuth);
+const dashApp = new Hono<HonoEnv>();
+dashApp.route("/license", licenseRoutes);
+dashApp.route("/byok", byokRoutes);
+dashApp.route("/usage", usageRoutes);
+dashApp.route("/chat", chatRoutes);
+dashApp.route("/admin", adminRoutes);
+app.route("/api", dashApp);
 
 const port = Number(process.env.PORT ?? 8080);
 console.log(`SORK Backend running on port ${port}`);
