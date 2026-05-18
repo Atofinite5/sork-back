@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { licenseAuth, clerkAuth } from "./middleware/auth.js";
+import { runMigrations } from "./db/migrate.js";
 import type { HonoEnv } from "./types.js";
 import licenseRoutes from "./routes/license.js";
 import byokRoutes from "./routes/byok.js";
@@ -57,6 +58,9 @@ dashApp.route("/admin", adminRoutes);
 app.route("/api", dashApp);
 
 const port = Number(process.env.PORT ?? 8080);
+
+runMigrations().catch((err) => console.error("Migration error:", err));
+
 console.log(`SORK Backend running on port ${port}`);
 
 serve({ fetch: app.fetch, port });
