@@ -3,13 +3,12 @@ import { neon } from "@neondatabase/serverless";
 export async function runMigrations(): Promise<void> {
   const sql = neon(process.env.DATABASE_URL!);
 
-  // Enums
-  await sql`DO $$ BEGIN CREATE TYPE IF NOT EXISTS plan AS ENUM ('free','pro','pro_plus'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
-  await sql`DO $$ BEGIN CREATE TYPE IF NOT EXISTS subscription_status AS ENUM ('trialing','active','past_due','canceled','incomplete','incomplete_expired','unpaid'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
-  await sql`DO $$ BEGIN CREATE TYPE IF NOT EXISTS usage_status AS ENUM ('ok','rate_limited','error'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
-  await sql`DO $$ BEGIN CREATE TYPE IF NOT EXISTS byok_provider AS ENUM ('groq','anthropic','nvidia','openai','cohere','custom'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
+  // Enums — use exception handler since IF NOT EXISTS isn't valid for types
+  await sql`DO $$ BEGIN CREATE TYPE plan AS ENUM ('free','pro','pro_plus'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
+  await sql`DO $$ BEGIN CREATE TYPE subscription_status AS ENUM ('trialing','active','past_due','canceled','incomplete','incomplete_expired','unpaid'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
+  await sql`DO $$ BEGIN CREATE TYPE usage_status AS ENUM ('ok','rate_limited','error'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
+  await sql`DO $$ BEGIN CREATE TYPE byok_provider AS ENUM ('groq','anthropic','nvidia','openai','cohere','custom'); EXCEPTION WHEN duplicate_object THEN null; END $$`;
 
-  // Core tables
   await sql`
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,7 +58,6 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW() NOT NULL
     )`;
 
-  // New tables
   await sql`
     CREATE TABLE IF NOT EXISTS byok_keys (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -85,5 +83,5 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW() NOT NULL
     )`;
 
-  console.log("Migrations complete ✓");
+  console.log("All tables created ✓");
 }
