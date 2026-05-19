@@ -83,5 +83,8 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW() NOT NULL
     )`;
 
+  // New columns
+  await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_model TEXT DEFAULT 'llama-3.3-70b-versatile'`;
+
   console.log("All tables created ✓");
 }

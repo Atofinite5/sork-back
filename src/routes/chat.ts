@@ -1,66 +1,152 @@
 import { Hono } from "hono";
-import type { HonoEnv } from "../types.js";
 import { groqChat } from "../lib/providers/groq.js";
 import { checkContentSafety } from "../lib/providers/nemotron.js";
 import { saveMemory, getRecentMemory, searchMemory } from "../agents/memory.js";
 import { db } from "../db/index.js";
-import { byokKeys } from "../db/schema.js";
+import { byokKeys, users } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { decryptKey } from "../lib/crypto.js";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import OpenAI from "openai";
 import Groq from "groq-sdk";
+import type { HonoEnv } from "../types.js";
 
 const chat = new Hono<HonoEnv>();
 
+// Available Groq models users can switch to
+const GROQ_MODELS: Record<string, string> = {
+  "llama-3.3-70b": "llama-3.3-70b-versatile",
+  "llama-3.1-70b": "llama-3.1-70b-versatile",
+  "llama-3.1-8b": "llama-3.1-8b-instant",
+  "mixtral": "mixtral-8x7b-32768",
+  "gemma2-9b": "gemma2-9b-it",
+  "llama3-70b": "llama3-70b-8192",
+  "llama3-8b": "llama3-8b-8192",
+};
+
+function detectModelSwitch(message: string): string | null {
+  const lower = message.toLowerCase();
+
+  // Explicit switch phrases
+  const patterns = [
+    /use\s+([\w\-\.]+)\s+(?:model|as model|for (?:chat|triage|scanning))/i,
+    /switch(?:\s+to)?\s+([\w\-\.]+)/i,
+    /change\s+(?:the\s+)?(?:model\s+)?to\s+([\w\-\.]+)/i,
+    /set\s+(?:model\s+)?(?:to\s+)?([\w\-\.]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = lower.match(pattern);
+    if (match) {
+      const candidate = match[1].toLowerCase();
+      // Check known models
+      for (const [key, value] of Object.entries(GROQ_MODELS)) {
+        if (candidate.includes(key) || key.includes(candidate)) return value;
+      }
+      // If it looks like a model ID, use it directly
+      if (candidate.includes("llama") || candidate.includes("mixtral") || candidate.includes("gemma")) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
 const chatSchema = z.object({
-  message: z.string().min(1).max(8000),
+  message: z.string().min(1).max(12000),
   sessionId: z.string().optional(),
+  hasAttachments: z.boolean().optional(),
+  attachedFiles: z.array(z.object({ name: z.string(), size: z.number() })).optional(),
 });
 
-// POST /chat — conversational BYOK setup + general SORK assistant
+const SORK_SYSTEM = `You are SORK — an AI-powered security assistant embedded in SORK Cloud, a multi-agent security pipeline.
+
+## Your persona
+You are precise, technical, and direct. You think like a senior security engineer. When you explain vulnerabilities you cite the attack vector, impact, and remediation. When you reply, you structure your thoughts clearly.
+
+## What you help with
+- **Security findings**: explain vulnerabilities, CVEs, CWEs, attack vectors
+- **BYOK setup**: help users add API endpoints (Groq, Claude, NVIDIA, OpenAI, Cohere, custom)
+- **Model switching**: when user asks to switch model, confirm and explain the change
+- **Code review**: if user pastes code, analyse it for security issues
+- **Pipeline results**: interpret triage/fix/verify outputs
+
+## Reply format rules (ALWAYS follow)
+- Use **bold** for important terms, severity levels, model names
+- Use bullet points (–) for lists, never asterisks for lists
+- Use \`inline code\` for file names, model IDs, commands, code snippets
+- Use numbered lists for step-by-step instructions
+- Short paragraphs (2–3 sentences max)
+- End with a clear action if one exists
+
+## BYOK setup
+When user wants to add an API key, ask for:
+1. Provider (Groq, Claude/Anthropic, NVIDIA, OpenAI, Cohere, or Custom)
+2. API key
+3. Model (optional)
+4. Base URL (only for Custom)
+Then confirm they should use the **BYOK Manager** panel below the chat.
+
+## Model switching
+Available Groq models: llama-3.3-70b-versatile (default, best), llama-3.1-70b-versatile, llama-3.1-8b-instant (fastest), mixtral-8x7b-32768, gemma2-9b-it
+When user switches model, say: "Switched to \`[model]\`. All future scans and triage will use this model."
+
+Never expose or repeat API keys in your responses.`;
+
 chat.post("/", async (c) => {
   const userId = c.get("userId") as string;
   const body = await c.req.json();
   const parsed = chatSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
-  const { message, sessionId = randomUUID() } = parsed.data;
+  const { message, sessionId = randomUUID(), hasAttachments, attachedFiles } = parsed.data;
 
   // Safety gate
-  const safety = await checkContentSafety(message);
+  const safety = await checkContentSafety(message.slice(0, 1000));
   if (!safety.safe) {
-    return c.json({ error: "Message blocked by safety filter.", reason: safety.reason }, 400);
+    return c.json({ error: "Message blocked by content safety filter.", reason: safety.reason }, 400);
   }
 
-  // Retrieve relevant memory
-  const recentMemory = await getRecentMemory(userId, sessionId, 8);
-  const semanticMemory = await searchMemory(userId, message, 3);
+  // Detect model switch intent
+  const switchModel = detectModelSwitch(message);
+  let modelSwitched = false;
 
-  const systemPrompt = `You are SORK — an AI-powered security assistant embedded in SORK Cloud. You help developers:
-1. Configure their API endpoints (Groq, Claude, NVIDIA, OpenAI, Cohere, custom)
-2. Understand security scan results
-3. Set up BYOK (bring your own key) providers
-4. Run security pipelines on their code
+  if (switchModel) {
+    await db.update(users)
+      .set({ preferredModel: switchModel, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    modelSwitched = true;
+  }
 
-When a user wants to add an API endpoint, ask for: provider name, API key, base URL (if custom), and preferred model.
-Then confirm and tell them you've saved it — the frontend will handle the actual saving.
+  // Get user's preferred model
+  const [userRow] = await db
+    .select({ preferredModel: users.preferredModel })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
 
-Respond in a helpful, concise, technical tone. Never expose user API keys in your responses.
+  const activeModel = switchModel ?? userRow?.preferredModel ?? "llama-3.3-70b-versatile";
 
-Relevant past context:
-${semanticMemory.map((m) => `[${m.role}]: ${m.content}`).join("\n")}`;
+  // Retrieve memory
+  const recentMemory = await getRecentMemory(userId, sessionId, 10);
+  const semanticMemory = await searchMemory(userId, message.slice(0, 300), 3);
 
+  const memoryContext = semanticMemory.length > 0
+    ? `\n\n## Relevant past context\n${semanticMemory.map((m) => `– ${m.content}`).join("\n")}`
+    : "";
+
+  const systemPrompt = SORK_SYSTEM + memoryContext;
   const history = recentMemory.map((m) => ({
     role: m.role as "user" | "assistant" | "system",
     content: m.content,
   }));
 
   // Save user message
-  await saveMemory(userId, sessionId, "user", message);
+  const displayMessage = message.replace(/\n\nAttached files:[\s\S]*/m, "").trim();
+  await saveMemory(userId, sessionId, "user", displayMessage);
 
-  // Check if user has an active BYOK key to use instead of inbuilt Groq
+  // Choose provider — use active BYOK if set, else inbuilt Groq
   const [byokKey] = await db
     .select()
     .from(byokKeys)
@@ -75,13 +161,12 @@ ${semanticMemory.map((m) => `[${m.role}]: ${m.content}`).join("\n")}`;
       const groq = new Groq({ apiKey: decrypted });
       const completion = await groq.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-        model: byokKey.model ?? "llama-3.3-70b-versatile",
+        model: byokKey.model ?? activeModel,
         temperature: 0.4,
         max_tokens: 1024,
       });
       reply = completion.choices[0]?.message?.content ?? "";
     } else {
-      // OpenAI-compatible for others
       const openai = new OpenAI({ apiKey: decrypted, baseURL: byokKey.baseUrl ?? undefined });
       const completion = await openai.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
@@ -92,22 +177,37 @@ ${semanticMemory.map((m) => `[${m.role}]: ${m.content}`).join("\n")}`;
       reply = completion.choices[0]?.message?.content ?? "";
     }
   } else {
-    // Default: inbuilt Groq
     reply = await groqChat(
       [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-      "llama-3.3-70b-versatile",
+      activeModel,
       0.4,
       1024
     );
   }
 
-  // Save assistant reply to memory
-  await saveMemory(userId, sessionId, "assistant", reply);
+  await saveMemory(userId, sessionId, "assistant", reply.slice(0, 500));
 
-  // Detect BYOK intent from reply to help frontend pre-fill forms
-  const byokIntent = /add.*(api|key|endpoint|provider)/i.test(message);
+  const byokIntent = /add.*(api|key|endpoint|provider)|byok|bring.*own/i.test(message);
 
-  return c.json({ reply, sessionId, byokIntent });
+  return c.json({
+    reply,
+    sessionId,
+    byokIntent,
+    modelSwitched,
+    activeModel,
+    ...(attachedFiles?.length ? { filesReceived: attachedFiles.length } : {}),
+  });
+});
+
+// GET /chat/model — get user's current preferred model
+chat.get("/model", async (c) => {
+  const userId = c.get("userId") as string;
+  const [userRow] = await db
+    .select({ preferredModel: users.preferredModel })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return c.json({ model: userRow?.preferredModel ?? "llama-3.3-70b-versatile" });
 });
 
 export default chat;

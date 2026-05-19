@@ -1,7 +1,7 @@
 import { db } from "../db/index.js";
 import { agentMemory } from "../db/schema.js";
 import { eq, desc } from "drizzle-orm";
-import { embedText, cosineSimilarity } from "../lib/providers/cohere.js";
+import { embedDocuments, embedQuery, cosineSimilarity } from "../lib/providers/cohere.js";
 
 export interface MemoryEntry {
   role: string;
@@ -12,7 +12,7 @@ export interface MemoryEntry {
 export async function saveMemory(userId: string, sessionId: string, role: string, content: string): Promise<void> {
   let embedding: string | undefined;
   try {
-    const [vec] = await embedText([content]);
+    const [vec] = await embedDocuments([content]);
     if (vec && vec.length > 0) {
       embedding = JSON.stringify(vec);
     }
@@ -40,8 +40,8 @@ export async function getRecentMemory(userId: string, sessionId: string, limit =
 
 export async function searchMemory(userId: string, query: string, topK = 3): Promise<MemoryEntry[]> {
   try {
-    const [queryVec] = await embedText([query]);
-    if (!queryVec || queryVec.length === 0) return [];
+    const queryVec = await embedQuery(query);
+    if (!queryVec?.length) return [];
 
     const rows = await db
       .select({ role: agentMemory.role, content: agentMemory.content, embedding: agentMemory.embedding })
