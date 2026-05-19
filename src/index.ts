@@ -77,16 +77,23 @@ app.route("/api", dashApp);
 
 const port = Number(process.env.PORT ?? 8080);
 
-// Run migrations before accepting traffic
-(async () => {
+// Run migrations (non-blocking — server starts regardless)
+runMigrations()
+  .then(() => console.log("Migrations complete ✓"))
+  .catch((err) => console.error("Migration error (non-fatal):", err));
+
+// Manual migration trigger endpoint for debugging
+app.get("/migrate", async (c) => {
   try {
     await runMigrations();
-  } catch (err) {
-    console.error("Migration failed:", err);
-    process.exit(1);
+    return c.json({ ok: true, message: "Migrations complete" });
+  } catch (err: unknown) {
+    const e = err as Error;
+    return c.json({ ok: false, error: e.message }, 500);
   }
-  console.log(`SORK Backend running on port ${port}`);
-  serve({ fetch: app.fetch, port });
-})();
+});
+
+console.log(`SORK Backend running on port ${port}`);
+serve({ fetch: app.fetch, port });
 
 export default app;
