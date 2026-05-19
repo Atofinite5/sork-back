@@ -49,11 +49,21 @@ export async function clerkAuth(c: Context<HonoEnv>, next: Next) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  const [user] = await db
+  let [user] = await db
     .select({ id: users.id })
     .from(users)
     .where(eq(users.clerkId, clerkId))
     .limit(1);
+
+  // Auto-create user if Clerk webhook hasn't fired yet
+  if (!user) {
+    const [created] = await db
+      .insert(users)
+      .values({ clerkId, email: `${clerkId}@pending.sork` })
+      .onConflictDoNothing()
+      .returning({ id: users.id });
+    user = created;
+  }
 
   if (!user) {
     return c.json({ error: "User not found" }, 404);
