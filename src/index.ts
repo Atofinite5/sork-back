@@ -15,6 +15,11 @@ import adminRoutes from "./routes/admin.js";
 
 const app = new Hono();
 
+app.onError((err, c) => {
+  console.error("Unhandled error:", err.message, err.stack);
+  return c.json({ error: err.message, stack: err.stack }, 500);
+});
+
 app.use(logger());
 app.use(
   cors({
@@ -26,6 +31,19 @@ app.use(
 );
 
 app.get("/health", (c) => c.json({ status: "ok", version: "1.0.0" }));
+
+app.get("/debug/db", async (c) => {
+  try {
+    const { db } = await import("./db/index.js");
+    const { users } = await import("./db/schema.js");
+    const { count } = await import("drizzle-orm");
+    const [row] = await db.select({ n: count() }).from(users);
+    return c.json({ ok: true, userCount: row?.n });
+  } catch (err: unknown) {
+    const e = err as Error;
+    return c.json({ ok: false, error: e.message, stack: e.stack }, 500);
+  }
+});
 
 // Webhook routes (no auth — verified via svix signature)
 app.route("/webhooks", webhookRoutes);
