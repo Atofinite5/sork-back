@@ -1,6 +1,7 @@
 import { groqChat } from "../lib/providers/groq.js";
 import type { TriageResult } from "./triage.js";
 import type { FixResult } from "./fix.js";
+import { extractJson } from "../lib/parseJson.js";
 
 export interface VerifyResult {
   passed: boolean;
@@ -87,18 +88,8 @@ export async function verifyAgent(
     2048
   );
 
-  try {
-    const clean = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    return JSON.parse(clean) as VerifyResult;
-  } catch {
-    return {
-      passed: false,
-      residualIssues: [],
-      newIssues: [],
-      confidence: 50,
-      recommendation: "rework",
-      notes: response.slice(0, 300),
-      score: 50,
-    };
-  }
+  const parsed = extractJson<VerifyResult>(response);
+  if (parsed) return parsed;
+
+  return { passed: false, residualIssues: [], newIssues: [], confidence: 50, recommendation: "rework", notes: "Could not parse verify response.", score: 50 };
 }

@@ -1,5 +1,6 @@
 import { groqChat } from "../lib/providers/groq.js";
 import type { TriageResult } from "./triage.js";
+import { extractJson } from "../lib/parseJson.js";
 
 export interface FixChange {
   issue_id: string;
@@ -79,15 +80,8 @@ export async function fixAgent(
     8192
   );
 
-  try {
-    const clean = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    return JSON.parse(clean) as FixResult;
-  } catch {
-    return {
-      fixedCode: code,
-      changes: [],
-      explanation: response.slice(0, 200),
-      patchApplied: false,
-    };
-  }
+  const parsed = extractJson<FixResult>(response);
+  if (parsed) return parsed;
+
+  return { fixedCode: code, changes: [], explanation: "Could not parse fix response.", patchApplied: false };
 }

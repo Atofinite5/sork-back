@@ -1,5 +1,6 @@
 import { groqChat } from "../lib/providers/groq.js";
 import { searchMemory } from "./memory.js";
+import { extractJson } from "../lib/parseJson.js";
 
 export interface TriageIssue {
   id: string;
@@ -101,18 +102,15 @@ export async function triageAgent(
     4096
   );
 
-  try {
-    const clean = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const parsed = JSON.parse(clean) as TriageResult;
-    return { ...parsed, linesScanned: lines };
-  } catch {
-    return {
-      severity: "info",
-      issues: [],
-      summary: response.slice(0, 300),
-      shouldFix: false,
-      confidence: 0,
-      linesScanned: lines,
-    };
-  }
+  const parsed = extractJson<TriageResult>(response);
+  if (parsed) return { ...parsed, linesScanned: lines };
+
+  return {
+    severity: "info",
+    issues: [],
+    summary: "Could not parse triage response.",
+    shouldFix: false,
+    confidence: 0,
+    linesScanned: lines,
+  };
 }
