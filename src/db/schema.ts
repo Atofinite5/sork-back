@@ -11,6 +11,7 @@ export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   clerkId: text("clerk_id").notNull().unique(),
   email: text("email").notNull(),
+  preferredModel: text("preferred_model").default("llama-3.3-70b-versatile"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -74,5 +75,15 @@ export const usageEvents = pgTable("usage_events", {
   outputTokens: integer("output_tokens").default(0),
   costUsd: decimal("cost_usd", { precision: 10, scale: 6 }).default("0"),
   status: usageStatusEnum("status").default("ok"),
+  // Scan analytics
+  language: text("language"),
+  filesScanned: integer("files_scanned").default(1),
+  issuesFound: integer("issues_found").default(0),
+  issuesFixed: integer("issues_fixed").default(0),
+  criticalCount: integer("critical_count").default(0),
+  highCount: integer("high_count").default(0),
+  mediumCount: integer("medium_count").default(0),
+  lowCount: integer("low_count").default(0),
+  fileName: text("file_name"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
