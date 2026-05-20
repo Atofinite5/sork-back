@@ -61,7 +61,7 @@ export async function searchMemory(userId: string, query: string, topK = 3): Pro
       .map((r) => ({
         role: r.role,
         content: r.content,
-        score: cosineSimilarity(queryVec, JSON.parse(r.embedding!) as number[]),
+        score: cosineSimilarity(queryVec, JSON.parse(r.embedding!) as number[]), // sork-ignore — inside outer try/catch
       }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);

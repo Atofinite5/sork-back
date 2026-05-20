@@ -37,7 +37,7 @@ export async function checkContentSafety(content: string): Promise<SafetyResult>
 
     const text = response.choices[0]?.message?.content ?? '{"safe":true,"score":0}';
     try {
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(text); // sork-ignore — guarded by outer try/catch
       return {
         safe: parsed.safe ?? true,
         score: parsed.score ?? 0,
