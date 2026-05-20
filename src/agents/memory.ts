@@ -31,11 +31,17 @@ export async function getRecentMemory(userId: string, sessionId: string, limit =
     .orderBy(desc(agentMemory.createdAt))
     .limit(limit);
 
-  return rows.reverse().map((r) => ({
-    role: r.role,
-    content: r.content,
-    embedding: r.embedding ? (JSON.parse(r.embedding) as number[]) : undefined,
-  }));
+  return rows.reverse().map((r) => {
+    let embedding: number[] | undefined;
+    if (r.embedding) {
+      try {
+        embedding = JSON.parse(r.embedding) as number[];
+      } catch {
+        // corrupted embedding — skip silently, memory still returns
+      }
+    }
+    return { role: r.role, content: r.content, embedding };
+  });
 }
 
 export async function searchMemory(userId: string, query: string, topK = 3): Promise<MemoryEntry[]> {
