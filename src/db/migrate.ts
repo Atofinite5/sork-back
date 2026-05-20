@@ -83,8 +83,19 @@ export async function runMigrations(): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW() NOT NULL
     )`;
 
-  // New columns
+  // New columns — users
   await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_model TEXT DEFAULT 'llama-3.3-70b-versatile'`;
+
+  // New columns — usage_events analytics
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS language TEXT`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS files_scanned INTEGER DEFAULT 1`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS issues_found INTEGER DEFAULT 0`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS issues_fixed INTEGER DEFAULT 0`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS critical_count INTEGER DEFAULT 0`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS high_count INTEGER DEFAULT 0`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS medium_count INTEGER DEFAULT 0`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS low_count INTEGER DEFAULT 0`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS file_name TEXT`;
 
   console.log("All tables created ✓");
 }

@@ -12,6 +12,7 @@ import chatRoutes from "./routes/chat.js";
 import usageRoutes from "./routes/usage.js";
 import webhookRoutes from "./routes/webhooks.js";
 import adminRoutes from "./routes/admin.js";
+import statsRoutes from "./routes/stats.js";
 
 const app = new Hono();
 
@@ -65,6 +66,8 @@ app.use("/api/usage", clerkAuth);
 app.use("/api/chat/*", clerkAuth);
 app.use("/api/chat", clerkAuth);
 app.use("/api/admin/*", clerkAuth);
+app.use("/api/stats/*", clerkAuth);
+app.use("/api/stats", clerkAuth);
 app.use("/api/admin", clerkAuth);
 
 const dashApp = new Hono<HonoEnv>();
@@ -73,6 +76,7 @@ dashApp.route("/byok", byokRoutes);
 dashApp.route("/usage", usageRoutes);
 dashApp.route("/chat", chatRoutes);
 dashApp.route("/admin", adminRoutes);
+dashApp.route("/stats", statsRoutes);
 app.route("/api", dashApp);
 
 const port = Number(process.env.PORT ?? 8080);
