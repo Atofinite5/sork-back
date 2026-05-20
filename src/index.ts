@@ -61,6 +61,7 @@ app.use("/api/license/*", clerkAuth);
 app.use("/api/license", clerkAuth);
 app.use("/api/byok/*", clerkAuth);
 app.use("/api/byok", clerkAuth);
+app.use("/api/byok/status", clerkAuth);
 app.use("/api/usage/*", clerkAuth);
 app.use("/api/usage", clerkAuth);
 app.use("/api/chat/*", clerkAuth);
