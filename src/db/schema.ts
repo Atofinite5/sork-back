@@ -87,3 +87,86 @@ export const usageEvents = pgTable("usage_events", {
   fileName: text("file_name"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+/* ─── DevSecOps Engine — new tables ─────────────────── */
+
+export const githubConnections = pgTable("github_connections", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  githubUserId: text("github_user_id").notNull(),
+  githubUsername: text("github_username").notNull(),
+  githubEmail: text("github_email"),
+  accessToken: text("access_token").notNull(),
+  scope: text("scope"),
+  avatarUrl: text("avatar_url"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const repositories = pgTable("repositories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  githubId: text("github_id").notNull(),
+  owner: text("owner").notNull(),
+  name: text("name").notNull(),
+  fullName: text("full_name").notNull(),
+  isPrivate: boolean("is_private").default(false),
+  defaultBranch: text("default_branch").default("main"),
+  language: text("language"),
+  description: text("description"),
+  stars: integer("stars").default(0),
+  openPrCount: integer("open_pr_count").default(0),
+  lastSyncedAt: timestamp("last_synced_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const pullRequests = pgTable("pull_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repositoryId: uuid("repository_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  githubPrNumber: integer("github_pr_number").notNull(),
+  title: text("title").notNull(),
+  body: text("body"),
+  author: text("author"),
+  sourceBranch: text("source_branch").notNull(),
+  targetBranch: text("target_branch").notNull(),
+  state: text("state").default("open"),
+  mergeable: boolean("mergeable"),
+  conflictCount: integer("conflict_count").default(0),
+  resolvedCount: integer("resolved_count").default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const mergeConflicts = pgTable("merge_conflicts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  pullRequestId: uuid("pull_request_id").notNull().references(() => pullRequests.id, { onDelete: "cascade" }),
+  filePath: text("file_path").notNull(),
+  language: text("language"),
+  baseCode: text("base_code"),
+  currentCode: text("current_code"),
+  incomingCode: text("incoming_code"),
+  resolvedCode: text("resolved_code"),
+  resolution: text("resolution"), // current | incoming | both | ai | manual
+  aiConfidence: text("ai_confidence"),
+  aiExplanation: text("ai_explanation"),
+  status: text("status").default("pending"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const scanJobs = pgTable("scan_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  repositoryId: uuid("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+  type: text("type").notNull(), // sast | secrets | dependencies | iac | full
+  status: text("status").default("pending"),
+  findings: integer("findings").default(0),
+  critical: integer("critical").default(0),
+  high: integer("high").default(0),
+  medium: integer("medium").default(0),
+  low: integer("low").default(0),
+  report: text("report"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+});

@@ -8,11 +8,13 @@ import type { HonoEnv } from "./types.js";
 import licenseRoutes from "./routes/license.js";
 import byokRoutes from "./routes/byok.js";
 import scanRoutes from "./routes/scan.js";
+import scanTypesRoutes from "./routes/scantypes.js";
 import chatRoutes from "./routes/chat.js";
 import usageRoutes from "./routes/usage.js";
 import webhookRoutes from "./routes/webhooks.js";
 import adminRoutes from "./routes/admin.js";
 import statsRoutes from "./routes/stats.js";
+import githubRoutes from "./routes/github.js";
 
 const app = new Hono();
 
@@ -78,6 +80,8 @@ dashApp.route("/usage", usageRoutes);
 dashApp.route("/chat", chatRoutes);
 dashApp.route("/admin", adminRoutes);
 dashApp.route("/stats", statsRoutes);
+dashApp.route("/github", githubRoutes);
+dashApp.route("/scan", scanTypesRoutes); // sub-routes: /sast /secrets /dependencies /iac /quality /licenses
 app.route("/api", dashApp);
 
 const port = Number(process.env.PORT ?? 8080);
