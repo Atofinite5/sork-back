@@ -16,6 +16,7 @@
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "@neondatabase/serverless": "^0.10.4",
+    "@octokit/rest": "^22.0.1",
     "@types/pg": "^8.20.0",
     "cohere-ai": "^7.15.0",
     "drizzle-orm": "^0.36.4",
