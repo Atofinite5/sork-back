@@ -97,5 +97,92 @@ export async function runMigrations(): Promise<void> {
   await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS low_count INTEGER DEFAULT 0`;
   await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS file_name TEXT`;
 
+  // ── DevSecOps Engine tables ──────────────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS github_connections (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      github_user_id TEXT NOT NULL,
+      github_username TEXT NOT NULL,
+      github_email TEXT,
+      access_token TEXT NOT NULL,
+      scope TEXT,
+      avatar_url TEXT,
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+    )`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS repositories (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      github_id TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      name TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      is_private BOOLEAN DEFAULT false,
+      default_branch TEXT DEFAULT 'main',
+      language TEXT,
+      description TEXT,
+      stars INTEGER DEFAULT 0,
+      open_pr_count INTEGER DEFAULT 0,
+      last_synced_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL
+    )`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS pull_requests (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      github_pr_number INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT,
+      author TEXT,
+      source_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      state TEXT DEFAULT 'open',
+      mergeable BOOLEAN,
+      conflict_count INTEGER DEFAULT 0,
+      resolved_count INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+    )`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS merge_conflicts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      pull_request_id UUID NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+      file_path TEXT NOT NULL,
+      language TEXT,
+      base_code TEXT,
+      current_code TEXT,
+      incoming_code TEXT,
+      resolved_code TEXT,
+      resolution TEXT,
+      ai_confidence TEXT,
+      ai_explanation TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+    )`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS scan_jobs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      repository_id UUID REFERENCES repositories(id) ON DELETE SET NULL,
+      type TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      findings INTEGER DEFAULT 0,
+      critical INTEGER DEFAULT 0,
+      high INTEGER DEFAULT 0,
+      medium INTEGER DEFAULT 0,
+      low INTEGER DEFAULT 0,
+      report TEXT,
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+      completed_at TIMESTAMP
+    )`;
+
   console.log("All tables created ✓");
 }
