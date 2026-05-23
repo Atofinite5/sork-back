@@ -26,7 +26,15 @@ app.onError((err, c) => {
 app.use(logger());
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN ?? "http://localhost:3000",
+    origin: (origin) => {
+      const allowed = [
+        "https://sorkcloud.space",
+        "https://www.sorkcloud.space",
+        process.env.CLIENT_ORIGIN ?? "",
+        "http://localhost:3000",
+      ].filter(Boolean);
+      return allowed.includes(origin ?? "") ? origin ?? "" : "";
+    },
     allowHeaders: ["Authorization", "Content-Type", "x-clerk-user-id"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
