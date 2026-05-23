@@ -259,6 +259,88 @@ app.get("/repos/:owner/:repo/pulls/:number/conflicts", clerkAuth, async (c) => {
   });
 });
 
+/* ── Full repository scan ────────────────────────────── */
+
+const SCAN_EXTS = [".ts",".tsx",".js",".jsx",".py",".go",".rs",".java",".rb",".php",".cs",".cpp",".c",".h"];
+
+app.post("/repos/:owner/:repo/scan", clerkAuth, async (c) => {
+  const { owner, repo } = c.req.param();
+  const octokit = await getUserOctokit(c.get("userId"));
+  if (!octokit) return c.json({ error: "GitHub not connected", code: "NOT_CONNECTED" }, 401);
+
+  try {
+    // Get default branch
+    const { data: repoData } = await octokit.repos.get({ owner, repo });
+    const branch = repoData.default_branch;
+
+    // Get the tree (all files recursively)
+    const { data: ref } = await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
+    const { data: tree } = await octokit.git.getTree({
+      owner, repo, tree_sha: ref.object.sha, recursive: "true",
+    });
+
+    // Filter to scannable files (limit to 30 to avoid timeout)
+    const files = tree.tree
+      .filter(t => t.type === "blob" && t.path && SCAN_EXTS.some(ext => t.path!.endsWith(ext)))
+      .filter(t => !t.path!.includes("node_modules/") && !t.path!.includes(".next/") && !t.path!.includes("dist/"))
+      .slice(0, 30);
+
+    // Scan each file with Groq
+    const findings = await Promise.allSettled(files.map(async file => {
+      try {
+        const { data: content } = await octokit.repos.getContent({ owner, repo, path: file.path!, ref: branch });
+        if (Array.isArray(content) || !("content" in content)) return null;
+        const code = Buffer.from(content.content, "base64").toString("utf-8").slice(0, 4000);
+        const ext = file.path!.split(".").pop() ?? "";
+        const lang = LANG_MAP[ext] ?? ext;
+
+        const prompt = `Quickly scan this ${lang} file for security issues. Return JSON only.
+File: ${file.path}
+Code:
+\`\`\`${lang}
+${code}
+\`\`\`
+
+Respond JSON:
+{"issues":[{"severity":"critical|high|medium|low","line":0,"cwe":"CWE-XXX","title":"...","description":"...","fix":"..."}],"clean":true|false}`;
+
+        const completion = await groq.chat.completions.create({
+          model: "llama-3.3-70b-versatile",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.1, max_tokens: 1024,
+        });
+        const result = extractJson(completion.choices[0]?.message?.content ?? "{}") as { issues?: unknown[]; clean?: boolean };
+        return { filePath: file.path, language: lang, code: code.slice(0, 2000), issues: result.issues ?? [], clean: result.clean ?? true };
+      } catch { return null; }
+    }));
+
+    const scanned = findings.filter(r => r.status === "fulfilled" && r.value !== null)
+      .map(r => (r as PromiseFulfilledResult<{ filePath: string; language: string; code: string; issues: { severity: string }[]; clean: boolean }>).value);
+
+    // Aggregate stats
+    const allIssues = scanned.flatMap(f => f.issues);
+    const critical = allIssues.filter(i => i.severity === "critical").length;
+    const high     = allIssues.filter(i => i.severity === "high").length;
+    const medium   = allIssues.filter(i => i.severity === "medium").length;
+    const low      = allIssues.filter(i => i.severity === "low").length;
+
+    return c.json({
+      ok: true,
+      owner, repo, branch,
+      filesScanned: scanned.length,
+      totalFiles: tree.tree.filter(t => t.type === "blob").length,
+      findings: scanned.filter(f => f.issues.length > 0),
+      stats: { critical, high, medium, low, total: allIssues.length },
+      summary: critical > 0 ? "CRITICAL issues found — block deploy"
+             : high > 0 ? "High-severity issues need attention"
+             : medium > 0 ? "Some issues found — review recommended"
+             : "Codebase is clean ✓",
+    });
+  } catch (e) {
+    return c.json({ ok: false, error: String(e) }, 500);
+  }
+});
+
 /* ── AI merge resolution ─────────────────────────────── */
 
 app.post("/resolve/ai", clerkAuth, async (c) => {
