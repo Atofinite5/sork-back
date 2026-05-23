@@ -157,24 +157,59 @@ chat.post("/", async (c) => {
 
   if (byokKey) {
     const decrypted = decryptKey(byokKey.encryptedKey);
-    if (byokKey.provider === "groq") {
-      const groq = new Groq({ apiKey: decrypted });
-      const completion = await groq.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-        model: byokKey.model ?? activeModel,
-        temperature: 0.4,
-        max_tokens: 1024,
-      });
-      reply = completion.choices[0]?.message?.content ?? "";
-    } else {
-      const openai = new OpenAI({ apiKey: decrypted, baseURL: byokKey.baseUrl ?? undefined });
-      const completion = await openai.chat.completions.create({
-        messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-        model: byokKey.model ?? "gpt-4o-mini",
-        temperature: 0.4,
-        max_tokens: 1024,
-      });
-      reply = completion.choices[0]?.message?.content ?? "";
+
+    // Default base URLs and models per provider
+    const PROVIDER_DEFAULTS: Record<string, { baseURL: string; model: string }> = {
+      nvidia:    { baseURL: "https://integrate.api.nvidia.com/v1", model: "meta/llama-3.3-70b-instruct" },
+      openai:    { baseURL: "https://api.openai.com/v1",           model: "gpt-4o-mini" },
+      anthropic: { baseURL: "https://api.anthropic.com/v1",        model: "claude-3-5-sonnet-20241022" },
+      cohere:    { baseURL: "https://api.cohere.ai/compatibility/v1", model: "command-r-plus" },
+      custom:    { baseURL: byokKey.baseUrl ?? "https://api.openai.com/v1", model: "gpt-4o-mini" },
+    };
+
+    try {
+      if (byokKey.provider === "groq") {
+        const groq = new Groq({ apiKey: decrypted });
+        const completion = await groq.chat.completions.create({
+          messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+          model: byokKey.model ?? activeModel,
+          temperature: 0.4,
+          max_tokens: 1024,
+        });
+        reply = completion.choices[0]?.message?.content ?? "";
+      } else if (byokKey.provider === "anthropic") {
+        // Anthropic uses different API — fall back to inbuilt Groq for chat
+        reply = await groqChat(
+          [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+          activeModel, 0.4, 1024
+        );
+      } else {
+        const defaults = PROVIDER_DEFAULTS[byokKey.provider] ?? PROVIDER_DEFAULTS.custom;
+        const openai = new OpenAI({
+          apiKey: decrypted,
+          baseURL: byokKey.baseUrl ?? defaults.baseURL,
+        });
+        const completion = await openai.chat.completions.create({
+          messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+          model: byokKey.model ?? defaults.model,
+          temperature: 0.4,
+          max_tokens: 1024,
+        });
+        reply = completion.choices[0]?.message?.content ?? "";
+      }
+    } catch (e: unknown) {
+      // BYOK failed — fall back to inbuilt Groq so the chat keeps working
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error(`BYOK ${byokKey.provider} failed:`, errMsg);
+      reply = await groqChat(
+        [
+          { role: "system", content: systemPrompt },
+          ...history,
+          { role: "user", content: message },
+          { role: "system", content: `Note to user: Your active ${byokKey.provider.toUpperCase()} BYOK key failed (${errMsg.slice(0, 100)}). I'm using the default model instead. Check your key in API Keys → BYOK.` },
+        ],
+        activeModel, 0.4, 1024
+      );
     }
   } else {
     reply = await groqChat(
