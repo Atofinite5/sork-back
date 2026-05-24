@@ -15,6 +15,7 @@ import webhookRoutes from "./routes/webhooks.js";
 import adminRoutes from "./routes/admin.js";
 import statsRoutes from "./routes/stats.js";
 import githubRoutes from "./routes/github.js";
+import agentRoutes from "./routes/agent.js";
 
 const app = new Hono();
 
@@ -90,6 +91,7 @@ dashApp.route("/admin", adminRoutes);
 dashApp.route("/stats", statsRoutes);
 dashApp.route("/github", githubRoutes);
 dashApp.route("/scan", scanTypesRoutes); // sub-routes: /sast /secrets /dependencies /iac /quality /licenses
+dashApp.route("/agent", agentRoutes);    // /scan /heavy /status — multi-tier model routing
 app.route("/api", dashApp);
 
 const port = Number(process.env.PORT ?? 8080);

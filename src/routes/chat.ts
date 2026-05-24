@@ -11,6 +11,7 @@ import { randomUUID } from "crypto";
 import OpenAI from "openai";
 import Groq from "groq-sdk";
 import type { HonoEnv } from "../types.js";
+import { callLLM } from "../lib/router.js";
 
 const chat = new Hono<HonoEnv>();
 
@@ -146,79 +147,21 @@ chat.post("/", async (c) => {
   const displayMessage = message.replace(/\n\nAttached files:[\s\S]*/m, "").trim();
   await saveMemory(userId, sessionId, "user", displayMessage);
 
-  // Choose provider — use active BYOK if set, else inbuilt Groq
-  const [byokKey] = await db
-    .select()
-    .from(byokKeys)
-    .where(and(eq(byokKeys.userId, userId), eq(byokKeys.active, true)))
-    .limit(1);
+  // Smart routing — chat queries prefer Groq (fast), heavy ones go to NVIDIA
+  // The router auto-falls back to inbuilt if BYOK fails
+  const isHeavyQuery = /\b(audit|deep\s*scan|security\s*review|vulnerability\s*analysis|complex\s*fix|refactor)\b/i.test(message);
+  const task = isHeavyQuery ? "heavy" as const : "chat" as const;
 
-  let reply: string;
+  const llmResult = await callLLM(
+    userId,
+    task,
+    [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+    { temperature: 0.4, maxTokens: 1024 }
+  );
 
-  if (byokKey) {
-    const decrypted = decryptKey(byokKey.encryptedKey);
-
-    // Default base URLs and models per provider
-    const PROVIDER_DEFAULTS: Record<string, { baseURL: string; model: string }> = {
-      nvidia:    { baseURL: "https://integrate.api.nvidia.com/v1", model: "meta/llama-3.3-70b-instruct" },
-      openai:    { baseURL: "https://api.openai.com/v1",           model: "gpt-4o-mini" },
-      anthropic: { baseURL: "https://api.anthropic.com/v1",        model: "claude-3-5-sonnet-20241022" },
-      cohere:    { baseURL: "https://api.cohere.ai/compatibility/v1", model: "command-r-plus" },
-      custom:    { baseURL: byokKey.baseUrl ?? "https://api.openai.com/v1", model: "gpt-4o-mini" },
-    };
-
-    try {
-      if (byokKey.provider === "groq") {
-        const groq = new Groq({ apiKey: decrypted });
-        const completion = await groq.chat.completions.create({
-          messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-          model: byokKey.model ?? activeModel,
-          temperature: 0.4,
-          max_tokens: 1024,
-        });
-        reply = completion.choices[0]?.message?.content ?? "";
-      } else if (byokKey.provider === "anthropic") {
-        // Anthropic uses different API — fall back to inbuilt Groq for chat
-        reply = await groqChat(
-          [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-          activeModel, 0.4, 1024
-        );
-      } else {
-        const defaults = PROVIDER_DEFAULTS[byokKey.provider] ?? PROVIDER_DEFAULTS.custom;
-        const openai = new OpenAI({
-          apiKey: decrypted,
-          baseURL: byokKey.baseUrl ?? defaults.baseURL,
-        });
-        const completion = await openai.chat.completions.create({
-          messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-          model: byokKey.model ?? defaults.model,
-          temperature: 0.4,
-          max_tokens: 1024,
-        });
-        reply = completion.choices[0]?.message?.content ?? "";
-      }
-    } catch (e: unknown) {
-      // BYOK failed — fall back to inbuilt Groq so the chat keeps working
-      const errMsg = e instanceof Error ? e.message : String(e);
-      console.error(`BYOK ${byokKey.provider} failed:`, errMsg);
-      reply = await groqChat(
-        [
-          { role: "system", content: systemPrompt },
-          ...history,
-          { role: "user", content: message },
-          { role: "system", content: `Note to user: Your active ${byokKey.provider.toUpperCase()} BYOK key failed (${errMsg.slice(0, 100)}). I'm using the default model instead. Check your key in API Keys → BYOK.` },
-        ],
-        activeModel, 0.4, 1024
-      );
-    }
-  } else {
-    reply = await groqChat(
-      [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-      activeModel,
-      0.4,
-      1024
-    );
-  }
+  const reply = llmResult.text;
+  // Mark unused legacy imports to keep file compiling (kept for potential future use)
+  void groqChat; void OpenAI; void Groq; void decryptKey; void byokKeys; void and;
 
   await saveMemory(userId, sessionId, "assistant", reply.slice(0, 500));
 
