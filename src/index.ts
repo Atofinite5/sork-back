@@ -9,6 +9,7 @@ import licenseRoutes from "./routes/license.js";
 import byokRoutes from "./routes/byok.js";
 import scanRoutes from "./routes/scan.js";
 import scanTypesRoutes from "./routes/scantypes.js";
+import aiRoutes from "./routes/ai.js";
 import chatRoutes from "./routes/chat.js";
 import usageRoutes from "./routes/usage.js";
 import webhookRoutes from "./routes/webhooks.js";
@@ -60,11 +61,14 @@ app.get("/debug/db", async (c) => {
 // Webhook routes (no auth — verified via svix signature)
 app.route("/webhooks", webhookRoutes);
 
-// CLI routes — license key Bearer token auth (only /api/scan)
+// CLI routes — license key Bearer token auth
 app.use("/api/scan/*", licenseAuth);
 app.use("/api/scan", licenseAuth);
+app.use("/api/ai/*", licenseAuth);
+app.use("/api/ai", licenseAuth);
 const cliApp = new Hono<HonoEnv>();
 cliApp.route("/scan", scanRoutes);
+cliApp.route("/ai", aiRoutes);
 app.route("/api", cliApp);
 
 // Dashboard routes — Clerk session header auth
