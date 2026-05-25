@@ -68,9 +68,12 @@ app.use("/api/scan/*", licenseAuth);
 app.use("/api/scan", licenseAuth);
 app.use("/api/ai/*", licenseAuth);
 app.use("/api/ai", licenseAuth);
+app.use("/api/cli/chat/*", licenseAuth);
+app.use("/api/cli/chat", licenseAuth);
 const cliApp = new Hono<HonoEnv>();
 cliApp.route("/scan", scanRoutes);
 cliApp.route("/ai", aiRoutes);
+cliApp.route("/cli/chat", chatRoutes); // CLI chat — same harness, license key auth
 app.route("/api", cliApp);
 
 // Dashboard routes — Clerk session header auth
