@@ -45,11 +45,7 @@ runs:
       shell: bash
       run: |
         if [ "${{ github.event_name }}" = "pull_request" ]; then
-          # Fetch the diff for the PR
-          DIFF=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }})
-          echo "diff<<SORK_EOF" >> $GITHUB_OUTPUT
-          echo "$DIFF" | head -c 50000 >> $GITHUB_OUTPUT
-          echo "SORK_EOF" >> $GITHUB_OUTPUT
+          gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} | head -c 50000 > /tmp/sork_diff.txt
           echo "has_diff=true" >> $GITHUB_OUTPUT
         else
           echo "has_diff=false" >> $GITHUB_OUTPUT
@@ -62,40 +58,54 @@ runs:
       if: steps.diff.outputs.has_diff == 'true'
       shell: bash
       run: |
+        # Build JSON payload safely using jq (no shell interpolation of diff content)
+        jq -n \
+          --rawfile diff /tmp/sork_diff.txt \
+          --arg repo "${{ github.repository }}" \
+          --argjson pr "${{ github.event.pull_request.number }}" \
+          --arg commit "${{ github.event.pull_request.head.sha }}" \
+          --arg branch "${{ github.event.pull_request.head.ref }}" \
+          --arg mode "${{ inputs.scan-mode }}" \
+          '{diff: $diff, repo: $repo, pr: $pr, commit: $commit, branch: $branch, mode: $mode}' \
+          > /tmp/sork_payload.json
+
         RESPONSE=$(curl -s -X POST "${{ inputs.api-url }}/api/ci/scan" \
           -H "Authorization: Bearer ${{ inputs.sork-key }}" \
           -H "Content-Type: application/json" \
-          -d "{
-            \"diff\": $(echo '${{ steps.diff.outputs.diff }}' | jq -Rs .),
-            \"repo\": \"${{ github.repository }}\",
-            \"pr\": ${{ github.event.pull_request.number }},
-            \"commit\": \"${{ github.event.pull_request.head.sha }}\",
-            \"branch\": \"${{ github.event.pull_request.head.ref }}\",
-            \"mode\": \"${{ inputs.scan-mode }}\"
-          }")
+          -d @/tmp/sork_payload.json)
 
-        echo "response=$RESPONSE" >> $GITHUB_OUTPUT
+        # Write response to file to avoid shell interpolation issues
+        echo "$RESPONSE" > /tmp/sork_response.json
 
         # Parse results
-        FINDINGS=$(echo "$RESPONSE" | jq -r '.findings // 0')
-        CRITICAL=$(echo "$RESPONSE" | jq -r '.critical // 0')
-        HIGH=$(echo "$RESPONSE" | jq -r '.high // 0')
-        STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
+        FINDINGS=$(jq -r '.findings // 0' /tmp/sork_response.json)
+        CRITICAL=$(jq -r '.critical // 0' /tmp/sork_response.json)
+        HIGH=$(jq -r '.high // 0' /tmp/sork_response.json)
+        STATUS=$(jq -r '.status // "error"' /tmp/sork_response.json)
 
         echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
         echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
         echo "high=$HIGH" >> $GITHUB_OUTPUT
         echo "status=$STATUS" >> $GITHUB_OUTPUT
 
+        # Clean up
+        rm -f /tmp/sork_diff.txt /tmp/sork_payload.json
+
     - name: Post comment
       if: steps.scan.outputs.findings != '0' && steps.scan.outputs.findings != ''
       shell: bash
       run: |
-        COMMENT=$(echo '${{ steps.scan.outputs.response }}' | jq -r '.comment // empty')
-        if [ -n "$COMMENT" ]; then
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} \
-            --body "$COMMENT"
+        if [ -f /tmp/sork_response.json ]; then
+          COMMENT=$(jq -r '.comment // empty' /tmp/sork_response.json)
+          if [ -n "$COMMENT" ]; then
+            # Write comment to file to avoid shell injection via PR content
+            echo "$COMMENT" > /tmp/sork_comment.md
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --repo ${{ github.repository }} \
+              --body-file /tmp/sork_comment.md
+            rm -f /tmp/sork_comment.md
+          fi
+          rm -f /tmp/sork_response.json
         fi
       env:
         GH_TOKEN: ${{ github.token }}

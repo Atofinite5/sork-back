@@ -7,7 +7,7 @@
 
 import { db } from "../db/index.js";
 import { vulnPatterns, scanSnapshots } from "../db/schema.js";
-import { eq, and, desc, isNull, sql } from "drizzle-orm";
+import { eq, and, desc, isNull, sql, inArray } from "drizzle-orm";
 import { callEmbed } from "./router.js";
 import { createHash } from "crypto";
 
@@ -79,17 +79,27 @@ export async function trackVulnPatterns(
   const recurring: PatternMatch[] = [];
   let newCount = 0;
 
-  for (const issue of issues) {
-    const ph = hashPattern(issue.category, issue.cwe, issue.title);
+  // Compute all hashes upfront
+  const issueHashes = issues.map(issue => ({
+    issue,
+    hash: hashPattern(issue.category, issue.cwe, issue.title),
+  }));
+  const allHashes = issueHashes.map(h => h.hash);
 
-    const existing = await db
-      .select()
-      .from(vulnPatterns)
-      .where(and(eq(vulnPatterns.userId, userId), eq(vulnPatterns.patternHash, ph)))
-      .limit(1);
+  // Single batch query — fetch all existing patterns at once
+  const existingPatterns = allHashes.length > 0
+    ? await db
+        .select()
+        .from(vulnPatterns)
+        .where(and(eq(vulnPatterns.userId, userId), inArray(vulnPatterns.patternHash, allHashes)))
+    : [];
 
-    if (existing.length > 0) {
-      const pattern = existing[0];
+  const existingMap = new Map(existingPatterns.map(p => [p.patternHash, p]));
+
+  for (const { issue, hash } of issueHashes) {
+    const pattern = existingMap.get(hash);
+
+    if (pattern) {
       const files = (pattern.filesAffected as string[]) ?? [];
       if (fileName && !files.includes(fileName)) {
         files.push(fileName);
@@ -125,7 +135,7 @@ export async function trackVulnPatterns(
 
       await db.insert(vulnPatterns).values({
         userId,
-        patternHash: ph,
+        patternHash: hash,
         category: issue.category,
         cwe: issue.cwe ?? null,
         title: issue.title,

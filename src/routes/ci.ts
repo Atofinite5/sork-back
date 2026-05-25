@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import { randomUUID, createHash, timingSafeEqual } from "crypto";
+import { randomUUID, createHmac, timingSafeEqual } from "crypto";
 import { db } from "../db/index.js";
 import { ciWebhooks, ciScanRuns, users, licenseKeys } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
@@ -85,25 +85,26 @@ ci.post("/webhook/:id", async (c) => {
 
   if (!webhook) return c.json({ error: "Webhook not found" }, 404);
 
-  // Verify signature
+  // Verify webhook signature — reject if missing or invalid
   const signature = c.req.header("x-hub-signature-256");
   const rawBody = await c.req.text();
 
-  if (signature) {
-    const expected = "sha256=" + createHash("sha256")
-      .update(webhook.webhookSecret)
-      .update(rawBody)
-      .digest("hex");
+  if (!signature) {
+    return c.json({ error: "Missing webhook signature" }, 401);
+  }
 
-    try {
-      const sigBuf = Buffer.from(signature);
-      const expBuf = Buffer.from(expected);
-      if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
-        return c.json({ error: "Invalid signature" }, 401);
-      }
-    } catch {
+  const expected = "sha256=" + createHmac("sha256", webhook.webhookSecret)
+    .update(rawBody)
+    .digest("hex");
+
+  try {
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
       return c.json({ error: "Invalid signature" }, 401);
     }
+  } catch {
+    return c.json({ error: "Invalid signature" }, 401);
   }
 
   const event = c.req.header("x-github-event");

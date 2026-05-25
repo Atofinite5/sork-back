@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, pgEnum, integer, decimal, boolean, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, pgEnum, integer, decimal, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const planEnum = pgEnum("plan", ["free", "pro", "pro_plus"]);
 export const subscriptionStatusEnum = pgEnum("subscription_status", [
@@ -189,7 +189,9 @@ export const vulnPatterns = pgTable("vuln_patterns", {
   resolvedAt: timestamp("resolved_at"),
   embedding: text("embedding"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => [
+  uniqueIndex("vuln_patterns_user_hash_idx").on(table.userId, table.patternHash),
+]);
 
 export const scanSnapshots = pgTable("scan_snapshots", {
   id: uuid("id").primaryKey().defaultRandom(),
