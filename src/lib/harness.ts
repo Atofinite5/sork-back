@@ -12,6 +12,9 @@
 import { callLLM, callEmbed, type Task } from "./router.js";
 import { saveMemory, getRecentMemory, searchMemory } from "../agents/memory.js";
 import { extractJson } from "./parseJson.js";
+import { trackVulnPatterns, getPatternInsights, recordScanSnapshot } from "./scanMemory.js";
+import { getFixPreferences, buildPreferenceHint } from "./fixLearning.js";
+import { generateSecurityTests, type GeneratedTest } from "./testGen.js";
 
 export type ChatIntent =
   | "general"       // normal conversation
@@ -46,6 +49,7 @@ export interface FixProposal {
   explanation: string;
   score: number;
   recommendation: "approve" | "rework" | "escalate";
+  generatedTest?: GeneratedTest;
 }
 
 export interface HarnessResult {
@@ -337,6 +341,25 @@ async function runTriageFlow(
     return { reply, intent, steps, ragContextUsed: ragUsed, durationMs: Date.now() - startTime };
   }
 
+  // Track vulnerability patterns in cross-scan memory
+  const patternStart = Date.now();
+  let patternInsights = "";
+  try {
+    const { newPatterns, recurringPatterns } = await trackVulnPatterns(input.userId, fileName, triage.issues);
+    if (recurringPatterns.length > 0) {
+      patternInsights = `\n\n> **Pattern Alert:** ${recurringPatterns.length} recurring pattern${recurringPatterns.length > 1 ? "s" : ""} detected — ` +
+        recurringPatterns.map(p => `**${p.title}** (seen ${p.occurrences}x)`).join(", ");
+    }
+    steps.push({ agent: "pattern-memory", tier: "embed", status: "done", durationMs: Date.now() - patternStart, detail: `${newPatterns} new, ${recurringPatterns.length} recurring` });
+  } catch {
+    steps.push({ agent: "pattern-memory", tier: "embed", status: "skipped", durationMs: Date.now() - patternStart });
+  }
+
+  // Record scan snapshot for cross-scan memory
+  try {
+    await recordScanSnapshot(input.userId, input.sessionId, fileName, undefined, code, triage, false);
+  } catch { /* best effort */ }
+
   // Build the triage report
   const sevIcon = (s: string) => s === "critical" ? "🔴" : s === "high" ? "🟠" : s === "medium" ? "🟡" : "🟢";
   let reply = `## Security Triage — \`${fileName}\`\n\n`;
@@ -353,9 +376,19 @@ async function runTriageFlow(
     reply += `\n\n`;
   }
 
+  // Add pattern intelligence if recurring issues found
+  if (patternInsights) {
+    reply += patternInsights + "\n\n";
+  }
+
+  // Get cross-scan insights
+  try {
+    const insights = await getPatternInsights(input.userId);
+    if (insights) reply += insights;
+  } catch { /* best effort */ }
+
   // If fixable, ask user
   if (triage.shouldFix && intent === "code_fix") {
-    // User already asked for fix — go straight to fixing
     return await runFixPipelineFromTriage(input, code, triage, steps, ragUsed, startTime, reply);
   }
 
@@ -383,20 +416,27 @@ async function runFixPipeline(
   startTime: number,
 ): Promise<HarnessResult> {
   const code = input.pendingFixCode ?? "";
-  const triage = input.pendingFixTriage as { issues?: { id: string; title: string; severity: string; description: string; fix_hint?: string }[]; summary?: string } | undefined;
+  const triage = input.pendingFixTriage as { issues?: { id: string; title: string; severity: string; description: string; fix_hint?: string; category?: string; cwe?: string; snippet?: string }[]; summary?: string } | undefined;
   return runFixPipelineFromTriage(input, code, triage ?? { issues: [], summary: "" }, steps, false, startTime, "");
 }
 
 async function runFixPipelineFromTriage(
   input: HarnessInput,
   code: string,
-  triage: { issues?: { id: string; title: string; severity: string; description: string; fix_hint?: string }[]; summary?: string },
+  triage: { issues?: { id: string; title: string; severity: string; description: string; fix_hint?: string; category?: string; cwe?: string; snippet?: string }[]; summary?: string },
   steps: AgentStep[],
   ragUsed: boolean,
   startTime: number,
   prefixReply: string,
 ): Promise<HarnessResult> {
   const issues = triage.issues ?? [];
+
+  // Load user's fix preferences to guide the AI
+  let preferenceHint = "";
+  try {
+    const prefs = await getFixPreferences(input.userId);
+    preferenceHint = buildPreferenceHint(prefs);
+  } catch { /* best effort */ }
 
   // Fix via deep tier
   const fixStart = Date.now();
@@ -405,10 +445,12 @@ async function runFixPipelineFromTriage(
     .map(i => `- [${i.id}] ${i.title} (${i.severity})\n  ${i.description}\n  Fix hint: ${i.fix_hint ?? "apply secure coding pattern"}`)
     .join("\n");
 
+  const fixSystemPrompt = FIX_PROMPT + preferenceHint;
+
   const fixResult = await callLLM(
     input.userId, "heavy",
     [
-      { role: "system", content: FIX_PROMPT },
+      { role: "system", content: fixSystemPrompt },
       { role: "user", content: `## Issues to fix\n${issueBlock}\n\n## Original code\n\`\`\`\n${code.slice(0, 8000)}\n\`\`\`` },
     ],
     { temperature: 0.05, maxTokens: 8192 },
@@ -465,6 +507,41 @@ async function runFixPipelineFromTriage(
   reply += `Score: **${score}/100** | Recommendation: **${recommendation.toUpperCase()}**\n`;
   if (verify?.notes) reply += `> ${verify.notes}\n`;
 
+  // Generate security test
+  const testStart = Date.now();
+  let generatedTest: GeneratedTest | undefined;
+  try {
+    const test = await generateSecurityTests(
+      input.userId,
+      code,
+      fix.fixedCode ?? code,
+      issues.map(i => ({
+        id: i.id, title: i.title, description: i.description,
+        severity: i.severity, category: i.category ?? "other",
+        cwe: i.cwe,
+        snippet: i.snippet,
+      })),
+    );
+    if (test) {
+      generatedTest = test;
+      reply += `\n### Security Test\n`;
+      reply += `**${test.description}** (${test.framework})\n`;
+      reply += `Covers: ${test.coversIssues.join(", ")}\n\n`;
+      reply += "```\n" + test.testCode + "\n```\n";
+      steps.push({ agent: "test-gen", tier: "deep", status: "done", durationMs: Date.now() - testStart, detail: `${test.coversIssues.length} tests` });
+    } else {
+      steps.push({ agent: "test-gen", tier: "deep", status: "skipped", durationMs: Date.now() - testStart });
+    }
+  } catch {
+    steps.push({ agent: "test-gen", tier: "deep", status: "skipped", durationMs: Date.now() - testStart });
+  }
+
+  // Record scan snapshot with fix
+  try {
+    const snapshotIssues = issues.map(i => ({ ...i, category: i.category ?? "other" }));
+    await recordScanSnapshot(input.userId, input.sessionId, undefined, undefined, code, { issues: snapshotIssues }, true, fix, score);
+  } catch { /* best effort */ }
+
   const proposal: FixProposal = {
     originalCode: code,
     fixedCode: fix.fixedCode ?? code,
@@ -474,6 +551,7 @@ async function runFixPipelineFromTriage(
     explanation: fix.explanation ?? "",
     score,
     recommendation,
+    generatedTest,
   };
 
   await saveMemory(input.userId, input.sessionId, "assistant", `Fix applied: ${fix.explanation ?? "patch generated"} (score ${score})`);

@@ -1,0 +1,119 @@
+name: "SORK Security Scan"
+description: "AI-powered security scanning for pull requests. Finds vulnerabilities and posts inline fix suggestions."
+author: "SORK Cloud"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  sork-key:
+    description: "SORK license key (from sorkcloud.space dashboard)"
+    required: true
+  api-url:
+    description: "SORK API URL"
+    required: false
+    default: "https://api.sorkcloud.space"
+  fail-on-critical:
+    description: "Fail the check if critical vulnerabilities are found"
+    required: false
+    default: "true"
+  fail-on-high:
+    description: "Fail the check if high severity vulnerabilities are found"
+    required: false
+    default: "false"
+  scan-mode:
+    description: "Scan mode: 'diff' (only changed files) or 'full' (all files)"
+    required: false
+    default: "diff"
+
+outputs:
+  findings:
+    description: "Number of security findings"
+  critical:
+    description: "Number of critical findings"
+  high:
+    description: "Number of high findings"
+  status:
+    description: "Scan status: clean, findings, or error"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get PR diff
+      id: diff
+      shell: bash
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # Fetch the diff for the PR
+          DIFF=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }})
+          echo "diff<<SORK_EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" | head -c 50000 >> $GITHUB_OUTPUT
+          echo "SORK_EOF" >> $GITHUB_OUTPUT
+          echo "has_diff=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_diff=false" >> $GITHUB_OUTPUT
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: SORK Scan
+      id: scan
+      if: steps.diff.outputs.has_diff == 'true'
+      shell: bash
+      run: |
+        RESPONSE=$(curl -s -X POST "${{ inputs.api-url }}/api/ci/scan" \
+          -H "Authorization: Bearer ${{ inputs.sork-key }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"diff\": $(echo '${{ steps.diff.outputs.diff }}' | jq -Rs .),
+            \"repo\": \"${{ github.repository }}\",
+            \"pr\": ${{ github.event.pull_request.number }},
+            \"commit\": \"${{ github.event.pull_request.head.sha }}\",
+            \"branch\": \"${{ github.event.pull_request.head.ref }}\",
+            \"mode\": \"${{ inputs.scan-mode }}\"
+          }")
+
+        echo "response=$RESPONSE" >> $GITHUB_OUTPUT
+
+        # Parse results
+        FINDINGS=$(echo "$RESPONSE" | jq -r '.findings // 0')
+        CRITICAL=$(echo "$RESPONSE" | jq -r '.critical // 0')
+        HIGH=$(echo "$RESPONSE" | jq -r '.high // 0')
+        STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
+
+        echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+        echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+        echo "high=$HIGH" >> $GITHUB_OUTPUT
+        echo "status=$STATUS" >> $GITHUB_OUTPUT
+
+    - name: Post comment
+      if: steps.scan.outputs.findings != '0' && steps.scan.outputs.findings != ''
+      shell: bash
+      run: |
+        COMMENT=$(echo '${{ steps.scan.outputs.response }}' | jq -r '.comment // empty')
+        if [ -n "$COMMENT" ]; then
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "$COMMENT"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: Check thresholds
+      shell: bash
+      run: |
+        CRITICAL=${{ steps.scan.outputs.critical }}
+        HIGH=${{ steps.scan.outputs.high }}
+
+        if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "$CRITICAL" -gt 0 ]; then
+          echo "::error::SORK found $CRITICAL critical vulnerability(ies). Failing check."
+          exit 1
+        fi
+
+        if [ "${{ inputs.fail-on-high }}" = "true" ] && [ "$HIGH" -gt 0 ]; then
+          echo "::error::SORK found $HIGH high severity vulnerability(ies). Failing check."
+          exit 1
+        fi
+
+        echo "✅ SORK scan passed"
