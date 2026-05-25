@@ -54,8 +54,8 @@ scan.post("/", async (c) => {
   await db.insert(usageEvents).values({
     userId,
     licenseKeyId: licenseKeyId ?? undefined,
-    provider: "groq",
-    model: "llama-3.3-70b-versatile",
+    provider: "sork-engine",
+    model: "auto",
     status: result.blocked ? "error" : "ok",
     language: language ?? "unknown",
     filesScanned: 1,

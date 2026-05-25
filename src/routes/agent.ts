@@ -52,7 +52,7 @@ app.post("/scan", clerkAuth, async (c) => {
       return files.length;
     } catch { return 0; }
   })();
-  stages.push({ name: "embed", status: embeddedCount > 0 ? "ok" : "skipped", provider: "cohere", ms: Date.now() - embedStart });
+  stages.push({ name: "embed", status: embeddedCount > 0 ? "ok" : "skipped", provider: "sork-embed", ms: Date.now() - embedStart });
 
   /* ── Stage 2: Groq fast triage per file ── */
   const triageStart = Date.now();
@@ -79,8 +79,8 @@ JSON only:
     .filter(r => r.status === "fulfilled")
     .map(r => (r as PromiseFulfilledResult<{ file: FilePayload; issues: Finding[]; riskScore: number; needsDeepReview: boolean }>).value);
 
-  const triageProvider = (await resolveProvider(userId, "chat")).provider;
-  stages.push({ name: "triage", status: "ok", provider: triageProvider, ms: Date.now() - triageStart });
+  void resolveProvider;
+  stages.push({ name: "triage", status: "ok", provider: "sork-fast", ms: Date.now() - triageStart });
 
   /* ── Stage 3: NVIDIA Nemotron heavy review on suspicious files ── */
   const heavyStart = Date.now();
@@ -104,15 +104,14 @@ JSON only:
 
     const r = await callLLM(userId, "heavy", [{ role: "user", content: prompt }], { temperature: 0.1, maxTokens: 2048 });
     const parsed = extractJson<{ verifiedIssues?: Finding[]; missedIssues?: Finding[]; recommendation?: string }>(r.text) ?? {};
-    return { filePath: t.file.path, ...parsed, usedProvider: r.usedProvider };
+    return { filePath: t.file.path, ...parsed, tier: "deep" as const };
   }));
 
   const heavyReviewed = heavyResults
     .filter(r => r.status === "fulfilled")
-    .map(r => (r as PromiseFulfilledResult<{ filePath: string; verifiedIssues?: Finding[]; missedIssues?: Finding[]; recommendation?: string; usedProvider: string }>).value);
+    .map(r => (r as PromiseFulfilledResult<{ filePath: string; verifiedIssues?: Finding[]; missedIssues?: Finding[]; recommendation?: string; tier: string }>).value);
 
-  const heavyProvider = (await resolveProvider(userId, "heavy")).provider;
-  stages.push({ name: "heavy", status: "ok", provider: heavyProvider, ms: Date.now() - heavyStart });
+  stages.push({ name: "heavy", status: "ok", provider: "sork-deep", ms: Date.now() - heavyStart });
 
   /* ── Stage 4: Aggregate stats ── */
   const allIssues: (Finding & { filePath: string })[] = [];
@@ -187,7 +186,7 @@ Respond as JSON only:
     filePath,
     language,
     ...parsed,
-    meta: { provider: r.usedProvider, model: r.usedModel, fellBack: r.fellBack },
+    meta: { tier: "deep", fellBack: r.fellBack },
   });
 });
 
@@ -202,9 +201,9 @@ app.get("/status", clerkAuth, async (c) => {
   ]);
   return c.json({
     routing: {
-      chat:   { source: chat.source,  provider: chat.provider,  model: chat.model  },
-      embed:  { source: embed.source, provider: embed.provider, model: embed.model },
-      heavy:  { source: heavy.source, provider: heavy.provider, model: heavy.model },
+      chat:   { source: chat.source,  tier: "fast",  ready: !!chat.apiKey  },
+      embed:  { source: embed.source, tier: "embed", ready: !!embed.apiKey },
+      heavy:  { source: heavy.source, tier: "deep",  ready: !!heavy.apiKey },
     },
   });
 });

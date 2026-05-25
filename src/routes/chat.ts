@@ -1,107 +1,38 @@
 import { Hono } from "hono";
-import { groqChat } from "../lib/providers/groq.js";
+import { streamSSE } from "hono/streaming";
 import { checkContentSafety } from "../lib/providers/nemotron.js";
 import { saveMemory, getRecentMemory, searchMemory } from "../agents/memory.js";
 import { db } from "../db/index.js";
-import { byokKeys, users } from "../db/schema.js";
-import { eq, and } from "drizzle-orm";
-import { decryptKey } from "../lib/crypto.js";
+import { users } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import OpenAI from "openai";
-import Groq from "groq-sdk";
 import type { HonoEnv } from "../types.js";
-import { callLLM } from "../lib/router.js";
+import { runHarness, type HarnessResult } from "../lib/harness.js";
 
 const chat = new Hono<HonoEnv>();
-
-// Available Groq models users can switch to
-const GROQ_MODELS: Record<string, string> = {
-  "llama-3.3-70b": "llama-3.3-70b-versatile",
-  "llama-3.1-70b": "llama-3.1-70b-versatile",
-  "llama-3.1-8b": "llama-3.1-8b-instant",
-  "mixtral": "mixtral-8x7b-32768",
-  "gemma2-9b": "gemma2-9b-it",
-  "llama3-70b": "llama3-70b-8192",
-  "llama3-8b": "llama3-8b-8192",
-};
-
-function detectModelSwitch(message: string): string | null {
-  const lower = message.toLowerCase();
-
-  // Explicit switch phrases
-  const patterns = [
-    /use\s+([\w\-\.]+)\s+(?:model|as model|for (?:chat|triage|scanning))/i,
-    /switch(?:\s+to)?\s+([\w\-\.]+)/i,
-    /change\s+(?:the\s+)?(?:model\s+)?to\s+([\w\-\.]+)/i,
-    /set\s+(?:model\s+)?(?:to\s+)?([\w\-\.]+)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = lower.match(pattern);
-    if (match) {
-      const candidate = match[1].toLowerCase();
-      // Check known models
-      for (const [key, value] of Object.entries(GROQ_MODELS)) {
-        if (candidate.includes(key) || key.includes(candidate)) return value;
-      }
-      // If it looks like a model ID, use it directly
-      if (candidate.includes("llama") || candidate.includes("mixtral") || candidate.includes("gemma")) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
 
 const chatSchema = z.object({
   message: z.string().min(1).max(12000),
   sessionId: z.string().optional(),
   hasAttachments: z.boolean().optional(),
-  attachedFiles: z.array(z.object({ name: z.string(), size: z.number() })).optional(),
+  attachedFiles: z.array(z.object({
+    name: z.string(),
+    content: z.string().optional(),
+    size: z.number(),
+  })).optional(),
+  pendingFixCode: z.string().optional(),
+  pendingFixTriage: z.unknown().optional(),
 });
 
-const SORK_SYSTEM = `You are SORK — an AI-powered security assistant embedded in SORK Cloud, a multi-agent security pipeline.
-
-## Your persona
-You are precise, technical, and direct. You think like a senior security engineer. When you explain vulnerabilities you cite the attack vector, impact, and remediation. When you reply, you structure your thoughts clearly.
-
-## What you help with
-- **Security findings**: explain vulnerabilities, CVEs, CWEs, attack vectors
-- **BYOK setup**: help users add API endpoints (Groq, Claude, NVIDIA, OpenAI, Cohere, custom)
-- **Model switching**: when user asks to switch model, confirm and explain the change
-- **Code review**: if user pastes code, analyse it for security issues
-- **Pipeline results**: interpret triage/fix/verify outputs
-
-## Reply format rules (ALWAYS follow)
-- Use **bold** for important terms, severity levels, model names
-- Use bullet points (–) for lists, never asterisks for lists
-- Use \`inline code\` for file names, model IDs, commands, code snippets
-- Use numbered lists for step-by-step instructions
-- Short paragraphs (2–3 sentences max)
-- End with a clear action if one exists
-
-## BYOK setup
-When user wants to add an API key, ask for:
-1. Provider (Groq, Claude/Anthropic, NVIDIA, OpenAI, Cohere, or Custom)
-2. API key
-3. Model (optional)
-4. Base URL (only for Custom)
-Then confirm they should use the **BYOK Manager** panel below the chat.
-
-## Model switching
-Available Groq models: llama-3.3-70b-versatile (default, best), llama-3.1-70b-versatile, llama-3.1-8b-instant (fastest), mixtral-8x7b-32768, gemma2-9b-it
-When user switches model, say: "Switched to \`[model]\`. All future scans and triage will use this model."
-
-Never expose or repeat API keys in your responses.`;
-
+/* ── POST /chat — main harness-powered endpoint ── */
 chat.post("/", async (c) => {
   const userId = c.get("userId") as string;
   const body = await c.req.json();
   const parsed = chatSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
-  const { message, sessionId = randomUUID(), hasAttachments, attachedFiles } = parsed.data;
+  const { message, sessionId = randomUUID(), attachedFiles, pendingFixCode, pendingFixTriage } = parsed.data;
 
   // Safety gate
   const safety = await checkContentSafety(message.slice(0, 1000));
@@ -109,75 +40,107 @@ chat.post("/", async (c) => {
     return c.json({ error: "Message blocked by content safety filter.", reason: safety.reason }, 400);
   }
 
-  // Detect model switch intent
-  const switchModel = detectModelSwitch(message);
-  let modelSwitched = false;
-
-  if (switchModel) {
-    await db.update(users)
-      .set({ preferredModel: switchModel, updatedAt: new Date() })
-      .where(eq(users.id, userId));
-    modelSwitched = true;
-  }
-
-  // Get user's preferred model
-  const [userRow] = await db
-    .select({ preferredModel: users.preferredModel })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-
-  const activeModel = switchModel ?? userRow?.preferredModel ?? "llama-3.3-70b-versatile";
-
-  // Retrieve memory
-  const recentMemory = await getRecentMemory(userId, sessionId, 10);
-  const semanticMemory = await searchMemory(userId, message.slice(0, 300), 3);
-
-  const memoryContext = semanticMemory.length > 0
-    ? `\n\n## Relevant past context\n${semanticMemory.map((m) => `– ${m.content}`).join("\n")}`
-    : "";
-
-  const systemPrompt = SORK_SYSTEM + memoryContext;
-  const history = recentMemory.map((m) => ({
-    role: m.role as "user" | "assistant" | "system",
-    content: m.content,
-  }));
-
-  // Save user message
-  const displayMessage = message.replace(/\n\nAttached files:[\s\S]*/m, "").trim();
-  await saveMemory(userId, sessionId, "user", displayMessage);
-
-  // Smart routing — chat queries prefer Groq (fast), heavy ones go to NVIDIA
-  // The router auto-falls back to inbuilt if BYOK fails
-  const isHeavyQuery = /\b(audit|deep\s*scan|security\s*review|vulnerability\s*analysis|complex\s*fix|refactor)\b/i.test(message);
-  const task = isHeavyQuery ? "heavy" as const : "chat" as const;
-
-  const llmResult = await callLLM(
+  const result: HarnessResult = await runHarness({
     userId,
-    task,
-    [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-    { temperature: 0.4, maxTokens: 1024 }
-  );
-
-  const reply = llmResult.text;
-  // Mark unused legacy imports to keep file compiling (kept for potential future use)
-  void groqChat; void OpenAI; void Groq; void decryptKey; void byokKeys; void and;
-
-  await saveMemory(userId, sessionId, "assistant", reply.slice(0, 500));
-
-  const byokIntent = /add.*(api|key|endpoint|provider)|byok|bring.*own/i.test(message);
+    sessionId,
+    message,
+    attachedFiles: attachedFiles?.filter(f => f.content).map(f => ({
+      name: f.name,
+      content: f.content!,
+      size: f.size,
+    })),
+    pendingFixCode,
+    pendingFixTriage,
+  });
 
   return c.json({
-    reply,
+    reply: result.reply,
     sessionId,
-    byokIntent,
-    modelSwitched,
-    activeModel,
-    ...(attachedFiles?.length ? { filesReceived: attachedFiles.length } : {}),
+    intent: result.intent,
+    steps: result.steps,
+    fixProposal: result.fixProposal,
+    awaitingFixConfirmation: result.awaitingFixConfirmation,
+    ragContextUsed: result.ragContextUsed,
+    durationMs: result.durationMs,
   });
 });
 
-// GET /chat/model — get user's current preferred model
+/* ── POST /chat/stream — SSE streaming endpoint ── */
+chat.post("/stream", async (c) => {
+  const userId = c.get("userId") as string;
+  const body = await c.req.json();
+  const parsed = chatSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  const { message, sessionId = randomUUID(), attachedFiles, pendingFixCode, pendingFixTriage } = parsed.data;
+
+  const safety = await checkContentSafety(message.slice(0, 1000));
+  if (!safety.safe) {
+    return c.json({ error: "Message blocked by content safety filter.", reason: safety.reason }, 400);
+  }
+
+  return streamSSE(c, async (stream) => {
+    await stream.writeSSE({ data: JSON.stringify({ type: "session", sessionId }), event: "session" });
+    await stream.writeSSE({ data: JSON.stringify({ type: "step", agent: "safety-gate", tier: "deep", status: "done" }), event: "step" });
+
+    try {
+      const result = await runHarness({
+        userId,
+        sessionId,
+        message,
+        attachedFiles: attachedFiles?.filter(f => f.content).map(f => ({
+          name: f.name,
+          content: f.content!,
+          size: f.size,
+        })),
+        pendingFixCode,
+        pendingFixTriage,
+      });
+
+      for (const step of result.steps) {
+        await stream.writeSSE({ data: JSON.stringify({ type: "step", ...step }), event: "step" });
+      }
+
+      // Stream the reply in chunks for a typing effect
+      const chunks = splitIntoChunks(result.reply, 60);
+      for (const chunk of chunks) {
+        await stream.writeSSE({ data: JSON.stringify({ type: "content", text: chunk }), event: "content" });
+      }
+
+      await stream.writeSSE({
+        data: JSON.stringify({
+          type: "done",
+          intent: result.intent,
+          fixProposal: result.fixProposal,
+          awaitingFixConfirmation: result.awaitingFixConfirmation,
+          ragContextUsed: result.ragContextUsed,
+          durationMs: result.durationMs,
+        }),
+        event: "done",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      await stream.writeSSE({ data: JSON.stringify({ type: "error", message: msg }), event: "error" });
+    }
+  });
+});
+
+function splitIntoChunks(text: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    let end = Math.min(i + chunkSize, text.length);
+    if (end < text.length) {
+      const space = text.lastIndexOf(" ", end);
+      if (space > i) end = space + 1;
+    }
+    chunks.push(text.slice(i, end));
+    i = end;
+  }
+  return chunks;
+}
+
+/* ── GET /chat/model — get user's current preferred model ── */
 chat.get("/model", async (c) => {
   const userId = c.get("userId") as string;
   const [userRow] = await db
@@ -185,7 +148,7 @@ chat.get("/model", async (c) => {
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
-  return c.json({ model: userRow?.preferredModel ?? "llama-3.3-70b-versatile" });
+  return c.json({ model: userRow?.preferredModel ?? "default" });
 });
 
 export default chat;

@@ -29,7 +29,7 @@ export async function runPipeline(input: OrchestratorInput): Promise<Orchestrato
   // Step 0: Nemotron safety gate
   const safetyStart = Date.now();
   const safety = await checkContentSafety(input.code);
-  pipeline.push({ agent: "nemotron-safety", status: "ok", duration: Date.now() - safetyStart });
+  pipeline.push({ agent: "safety-gate", status: "ok", duration: Date.now() - safetyStart });
 
   if (!safety.safe) {
     return {
