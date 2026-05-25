@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, pgEnum, integer, decimal, boolean } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, pgEnum, integer, decimal, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const planEnum = pgEnum("plan", ["free", "pro", "pro_plus"]);
 export const subscriptionStatusEnum = pgEnum("subscription_status", [
@@ -167,6 +167,100 @@ export const scanJobs = pgTable("scan_jobs", {
   medium: integer("medium").default(0),
   low: integer("low").default(0),
   report: text("report"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+});
+
+/* ─── Cross-Scan Security Memory ─────────────────── */
+
+export const vulnPatterns = pgTable("vuln_patterns", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  patternHash: text("pattern_hash").notNull(),
+  category: text("category").notNull(),
+  cwe: text("cwe"),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  fixHint: text("fix_hint"),
+  severity: text("severity").notNull(),
+  occurrences: integer("occurrences").default(1),
+  filesAffected: jsonb("files_affected").$type<string[]>().default([]),
+  lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at"),
+  embedding: text("embedding"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("vuln_patterns_user_hash_idx").on(table.userId, table.patternHash),
+]);
+
+export const scanSnapshots = pgTable("scan_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionId: text("session_id"),
+  fileName: text("file_name"),
+  language: text("language"),
+  codeHash: text("code_hash").notNull(),
+  issueIds: jsonb("issue_ids").$type<string[]>().default([]),
+  triageJson: jsonb("triage_json"),
+  fixApplied: boolean("fix_applied").default(false),
+  fixJson: jsonb("fix_json"),
+  verifyScore: integer("verify_score"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+/* ─── Fix Learning — user edit preferences ─────────── */
+
+export const fixEdits = pgTable("fix_edits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  patternId: uuid("pattern_id").references(() => vulnPatterns.id, { onDelete: "set null" }),
+  category: text("category").notNull(),
+  severity: text("severity").notNull(),
+  aiProposedCode: text("ai_proposed_code").notNull(),
+  userFinalCode: text("user_final_code").notNull(),
+  diffDelta: text("diff_delta"),
+  editType: text("edit_type").notNull(),
+  embedding: text("embedding"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const fixPreferences = pgTable("fix_preferences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  category: text("category").notNull(),
+  preferredPattern: text("preferred_pattern").notNull(),
+  confidence: integer("confidence").default(50),
+  sampleCount: integer("sample_count").default(1),
+  lastAppliedAt: timestamp("last_applied_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+/* ─── CI/CD Webhook Integration ────────────────────── */
+
+export const ciWebhooks = pgTable("ci_webhooks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  repositoryId: uuid("repository_id").references(() => repositories.id, { onDelete: "cascade" }),
+  webhookSecret: text("webhook_secret").notNull(),
+  active: boolean("active").default(true),
+  events: jsonb("events").$type<string[]>().default(["pull_request"]),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const ciScanRuns = pgTable("ci_scan_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  webhookId: uuid("webhook_id").notNull().references(() => ciWebhooks.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  prNumber: integer("pr_number"),
+  commitSha: text("commit_sha").notNull(),
+  branch: text("branch").notNull(),
+  status: text("status").default("pending"),
+  findings: integer("findings").default(0),
+  critical: integer("critical").default(0),
+  high: integer("high").default(0),
+  reportUrl: text("report_url"),
+  commentId: text("comment_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
 });

@@ -17,6 +17,8 @@ import adminRoutes from "./routes/admin.js";
 import statsRoutes from "./routes/stats.js";
 import githubRoutes from "./routes/github.js";
 import agentRoutes from "./routes/agent.js";
+import ciRoutes from "./routes/ci.js";
+import fixlearnRoutes from "./routes/fixlearn.js";
 
 const app = new Hono();
 
@@ -81,6 +83,11 @@ app.use("/api/usage/*", clerkAuth);
 app.use("/api/usage", clerkAuth);
 app.use("/api/chat/*", clerkAuth);
 app.use("/api/chat", clerkAuth);
+app.use("/api/fixlearn/*", clerkAuth);
+app.use("/api/fixlearn", clerkAuth);
+app.use("/api/ci/setup", clerkAuth);
+app.use("/api/ci/runs", clerkAuth);
+app.use("/api/ci/webhooks", clerkAuth);
 app.use("/api/admin/*", clerkAuth);
 app.use("/api/stats/*", clerkAuth);
 app.use("/api/stats", clerkAuth);
@@ -96,7 +103,15 @@ dashApp.route("/stats", statsRoutes);
 dashApp.route("/github", githubRoutes);
 dashApp.route("/scan", scanTypesRoutes); // sub-routes: /sast /secrets /dependencies /iac /quality /licenses
 dashApp.route("/agent", agentRoutes);    // /scan /heavy /status — multi-tier model routing
+dashApp.route("/fixlearn", fixlearnRoutes); // /edit /preferences /history /insights — fix learning
+dashApp.route("/ci", ciRoutes);            // /setup /runs /webhooks — CI dashboard
 app.route("/api", dashApp);
+
+// CI webhook receiver — no auth (verified via webhook signature)
+app.route("/ci", ciRoutes);
+
+// CI scan — license key auth for GitHub Action
+app.use("/api/ci/scan", licenseAuth);
 
 const port = Number(process.env.PORT ?? 8080);
 
