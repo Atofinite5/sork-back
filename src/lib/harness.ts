@@ -15,6 +15,9 @@ import { extractJson } from "./parseJson.js";
 import { trackVulnPatterns, getPatternInsights, recordScanSnapshot } from "./scanMemory.js";
 import { getFixPreferences, buildPreferenceHint } from "./fixLearning.js";
 import { generateSecurityTests, type GeneratedTest } from "./testGen.js";
+import { getUserQuota } from "./quota.js";
+import { db } from "../db/index.js";
+import { usageEvents } from "../db/schema.js";
 
 export type ChatIntent =
   | "general"       // normal conversation
@@ -291,6 +294,18 @@ async function runTriageFlow(
     return runChatFlow(input, "general", steps, history, ragContext, ragUsed, startTime);
   }
 
+  // ── Quota gate: code scans/fixes through chat count toward scan limit ──
+  const quota = await getUserQuota(input.userId);
+  if (quota.exhausted) {
+    return {
+      reply: "**Scan quota exhausted.** You've used all 14 free scans.\n\nUpgrade to **Pro** for unlimited scans at [sorkcloud.space/pricing](https://sorkcloud.space/pricing).\n\n_Chat is still unlimited — ask me anything about security concepts, best practices, or your existing scan results._",
+      intent,
+      steps,
+      ragContextUsed: ragUsed,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
   // Embed the code for future RAG
   const embedStart = Date.now();
   try {
@@ -360,6 +375,26 @@ async function runTriageFlow(
     await recordScanSnapshot(input.userId, input.sessionId, fileName, undefined, code, triage, false);
   } catch { /* best effort */ }
 
+  // ── Log usage: this counts as a scan toward the user's quota ──
+  const issues = triage.issues ?? [];
+  try {
+    await db.insert(usageEvents).values({
+      userId: input.userId,
+      provider: "sork-engine",
+      model: "auto",
+      status: "ok",
+      language: detectLanguage(fileName),
+      filesScanned: input.attachedFiles?.length ?? 1,
+      issuesFound: issues.length,
+      issuesFixed: 0,
+      criticalCount: issues.filter(i => i.severity === "critical").length,
+      highCount: issues.filter(i => i.severity === "high").length,
+      mediumCount: issues.filter(i => i.severity === "medium").length,
+      lowCount: issues.filter(i => i.severity === "low" || i.severity === "info").length,
+      fileName: fileName !== "unknown" ? fileName : null,
+    });
+  } catch { /* best effort — don't block scan on logging failure */ }
+
   // Build the triage report
   const sevIcon = (s: string) => s === "critical" ? "🔴" : s === "high" ? "🟠" : s === "medium" ? "🟡" : "🟢";
   let reply = `## Security Triage — \`${fileName}\`\n\n`;
@@ -367,7 +402,7 @@ async function runTriageFlow(
   reply += `Confidence: **${triage.confidence ?? "N/A"}%** | Overall: **${(triage.severity ?? "unknown").toUpperCase()}**\n\n`;
 
   reply += `### Findings\n\n`;
-  for (const issue of triage.issues.slice(0, 8)) {
+  for (const issue of issues.slice(0, 8)) {
     reply += `${sevIcon(issue.severity)} **[${issue.id}] ${issue.title}** (${issue.severity})\n`;
     reply += `> ${issue.description}\n`;
     if (issue.snippet) reply += `> \`${issue.snippet}\`\n`;
@@ -393,7 +428,7 @@ async function runTriageFlow(
   }
 
   if (triage.shouldFix) {
-    reply += `---\n\n**${triage.issues.filter(i => i.severity === "critical" || i.severity === "high").length} issues need fixing.**\n\n`;
+    reply += `---\n\n**${issues.filter(i => i.severity === "critical" || i.severity === "high").length} issues need fixing.**\n\n`;
     reply += `Should **SORK fix this automatically**, or do you want to fix it yourself?\n`;
     reply += `_Say "fix it" and SORK will generate a minimal security patch._`;
   }
@@ -415,6 +450,18 @@ async function runFixPipeline(
   steps: AgentStep[],
   startTime: number,
 ): Promise<HarnessResult> {
+  // Quota gate for fix confirmations too
+  const quota = await getUserQuota(input.userId);
+  if (quota.exhausted) {
+    return {
+      reply: "**Scan quota exhausted.** Upgrade to **Pro** for unlimited scans at [sorkcloud.space/pricing](https://sorkcloud.space/pricing).",
+      intent: "code_fix",
+      steps,
+      ragContextUsed: false,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
   const code = input.pendingFixCode ?? "";
   const triage = input.pendingFixTriage as { issues?: { id: string; title: string; severity: string; description: string; fix_hint?: string; category?: string; cwe?: string; snippet?: string }[]; summary?: string } | undefined;
   return runFixPipelineFromTriage(input, code, triage ?? { issues: [], summary: "" }, steps, false, startTime, "");
@@ -536,6 +583,24 @@ async function runFixPipelineFromTriage(
     steps.push({ agent: "test-gen", tier: "deep", status: "skipped", durationMs: Date.now() - testStart });
   }
 
+  // ── Log fix as usage event (updates issuesFixed count) ──
+  try {
+    await db.insert(usageEvents).values({
+      userId: input.userId,
+      provider: "sork-engine",
+      model: "auto",
+      status: "ok",
+      language: "unknown",
+      filesScanned: 1,
+      issuesFound: issues.length,
+      issuesFixed: fix.changes?.length ?? 0,
+      criticalCount: issues.filter(i => i.severity === "critical" || i.severity === "high").length,
+      highCount: issues.filter(i => i.severity === "high").length,
+      mediumCount: issues.filter(i => i.severity === "medium").length,
+      lowCount: issues.filter(i => i.severity === "low" || i.severity === "info").length,
+    });
+  } catch { /* best effort */ }
+
   // Record scan snapshot with fix
   try {
     const snapshotIssues = issues.map(i => ({ ...i, category: i.category ?? "other" }));
@@ -564,4 +629,16 @@ async function runFixPipelineFromTriage(
     ragContextUsed: ragUsed,
     durationMs: Date.now() - startTime,
   };
+}
+
+/** Infer language from file extension(s) */
+function detectLanguage(fileName: string): string {
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+    py: "python", go: "go", rs: "rust", java: "java", cs: "csharp",
+    rb: "ruby", php: "php", c: "c", cpp: "cpp", h: "c", hpp: "cpp",
+    vue: "vue", svelte: "svelte",
+  };
+  return map[ext] ?? "unknown";
 }
